@@ -5,7 +5,7 @@ import video from "../Modals/video.js";
 
 // Toggle subscribe / unsubscribe
 export const handlesubscribe = async (req, res) => {
-  const { userId, channelId, channelName } = req.body;
+  const { userId, channelId, channelName, email, userName } = req.body;
 
   if (!userId) {
     return res.status(400).json({ message: "userId is required to subscribe" });
@@ -16,9 +16,25 @@ export const handlesubscribe = async (req, res) => {
   }
 
   try {
-    const isValidViewerId = mongoose.Types.ObjectId.isValid(userId);
-    if (!isValidViewerId) {
-      return res.status(400).json({ message: "Invalid user ID" });
+    let resolvedViewerId = userId;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      const emailQuery = email ? [{ email: email.toLowerCase() }] : [];
+      const matchedViewer = await user.findOne({
+        $or: [
+          ...emailQuery,
+          { email: `${userId}@yourtube.local` },
+        ],
+      });
+      if (matchedViewer) {
+        resolvedViewerId = matchedViewer._id;
+      } else {
+        const createdViewer = await user.create({
+          name: userName || "User",
+          email: email ? email.toLowerCase() : `${userId}@yourtube.local`,
+          plan: "free",
+        });
+        resolvedViewerId = createdViewer._id;
+      }
     }
 
     const isValidChannelId = mongoose.Types.ObjectId.isValid(channelId);
@@ -44,13 +60,13 @@ export const handlesubscribe = async (req, res) => {
     if (!finalChannelName) finalChannelName = "Channel";
 
     // Prevent self-subscription
-    if (resolvedChannelId && String(userId) === String(resolvedChannelId)) {
+    if (resolvedChannelId && String(resolvedViewerId) === String(resolvedChannelId)) {
       return res.status(400).json({ message: "You cannot subscribe to your own channel" });
     }
 
     // Query for existing subscription
     const query = {
-      viewer: userId,
+      viewer: resolvedViewerId,
       $or: [
         { channelName: finalChannelName },
         ...(resolvedChannelId ? [{ channel: resolvedChannelId }] : []),
@@ -69,15 +85,24 @@ export const handlesubscribe = async (req, res) => {
         message: `Unsubscribed from ${finalChannelName}`,
       });
     } else {
-      // Subscribe
-      const newSub = await subscription.create({
-        viewer: userId,
-        channel: resolvedChannelId,
-        channelName: finalChannelName,
-      });
+      // Subscribe - use findOneAndUpdate with upsert to prevent duplicate key errors
+      const newSub = await subscription.findOneAndUpdate(
+        { viewer: resolvedViewerId, channelName: finalChannelName },
+        {
+          $setOnInsert: {
+            viewer: resolvedViewerId,
+            channel: resolvedChannelId,
+            channelName: finalChannelName,
+            subscribedOn: new Date(),
+          },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+
       const populatedSub = await subscription
         .findById(newSub._id)
         .populate("channel", "name channelname description image");
+
       return res.status(200).json({
         subscribed: true,
         subscription: populatedSub,
@@ -93,11 +118,27 @@ export const handlesubscribe = async (req, res) => {
 // Check if a user is subscribed to a specific channel
 export const getSubscriptionStatus = async (req, res) => {
   const { userId, channelId } = req.params;
-  const { channelName } = req.query;
+  const { channelName, email } = req.query;
 
   try {
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
+    if (!userId) {
       return res.status(200).json({ subscribed: false });
+    }
+
+    let resolvedViewerId = userId;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      const emailQuery = email ? [{ email: String(email).toLowerCase() }] : [];
+      const matchedViewer = await user.findOne({
+        $or: [
+          ...emailQuery,
+          { email: `${userId}@yourtube.local` },
+        ],
+      });
+      if (matchedViewer) {
+        resolvedViewerId = matchedViewer._id;
+      } else {
+        return res.status(200).json({ subscribed: false });
+      }
     }
 
     const isValidChannelId = mongoose.Types.ObjectId.isValid(channelId);
@@ -118,7 +159,7 @@ export const getSubscriptionStatus = async (req, res) => {
     }
 
     const existing = await subscription.findOne({
-      viewer: userId,
+      viewer: resolvedViewerId,
       $or: orConditions,
     });
 
@@ -132,14 +173,31 @@ export const getSubscriptionStatus = async (req, res) => {
 // Get all subscriptions and their videos for a user
 export const getUserSubscriptions = async (req, res) => {
   const { userId } = req.params;
+  const { email } = req.query;
 
   try {
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "Invalid user ID" });
+    if (!userId) {
+      return res.status(200).json({ subscriptions: [], videos: [] });
+    }
+
+    let resolvedViewerId = userId;
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      const emailQuery = email ? [{ email: String(email).toLowerCase() }] : [];
+      const matchedViewer = await user.findOne({
+        $or: [
+          ...emailQuery,
+          { email: `${userId}@yourtube.local` },
+        ],
+      });
+      if (matchedViewer) {
+        resolvedViewerId = matchedViewer._id;
+      } else {
+        return res.status(200).json({ subscriptions: [], videos: [] });
+      }
     }
 
     const subs = await subscription
-      .find({ viewer: userId })
+      .find({ viewer: resolvedViewerId })
       .populate("channel", "name channelname description image")
       .sort({ createdAt: -1 });
 

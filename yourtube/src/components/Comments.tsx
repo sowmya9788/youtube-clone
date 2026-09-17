@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   Avatar,
   AvatarFallback,
@@ -10,6 +10,7 @@ import { Textarea } from "./ui/textarea";
 import { Button } from "./ui/button";
 import { formatDistanceToNow } from "date-fns";
 import { useUser } from "@/lib/AuthContext";
+import { auth } from "@/lib/firebase";
 import axiosInstance from "@/lib/axiosinstance";
 import EmojiPicker from "emoji-picker-react";
 
@@ -29,12 +30,61 @@ interface Comment {
   reported?: boolean;
 }
 
+interface CommentsProps {
+  videoId: string;
+  user?: any;
+  authLoading?: boolean;
+}
+
 const Comments = ({
   videoId,
-}: {
-  videoId: string;
-}) => {
-  const { user } = useUser();
+  user: propUser,
+  authLoading: propAuthLoading,
+}: CommentsProps) => {
+  const authContext = useUser() as any;
+
+  // Resolve active user from props, context, firebase auth SDK, or localStorage
+  const activeUser = useMemo(() => {
+    let resolved = null;
+    if (propUser && (propUser._id || propUser.uid || propUser.email)) {
+      resolved = propUser;
+    } else if (authContext?.user && (authContext.user._id || authContext.user.uid || authContext.user.email)) {
+      resolved = authContext.user;
+    } else if (authContext?.currentUser && (authContext.currentUser._id || authContext.currentUser.uid || authContext.currentUser.email)) {
+      resolved = authContext.currentUser;
+    } else if (auth?.currentUser) {
+      resolved = {
+        _id: auth.currentUser.uid,
+        uid: auth.currentUser.uid,
+        name: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+        displayName: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+        email: auth.currentUser.email,
+        image: auth.currentUser.photoURL || "",
+      };
+    } else {
+      try {
+        const stored = localStorage.getItem("user");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (parsed && (parsed._id || parsed.uid || parsed.email)) resolved = parsed;
+        }
+      } catch (_) {}
+    }
+
+    if (resolved) {
+      return {
+        ...resolved,
+        _id: resolved._id || resolved.uid,
+        uid: resolved.uid || resolved._id,
+        name: resolved.name || resolved.displayName || resolved.email?.split("@")[0] || "User",
+      };
+    }
+    return null;
+  }, [propUser, authContext?.user, authContext?.currentUser]);
+
+  // Alias for backward compatibility with child components & handlers
+  const user = activeUser;
+  const isAuthInitializing = propAuthLoading ?? authContext?.loading ?? false;
 
   const [comments, setComments] = useState<Comment[]>([]);
   const [newComment, setNewComment] = useState("");
@@ -101,119 +151,159 @@ const Comments = ({
   ========================= */
 
   const handleSubmitComment = async () => {
-    if (!user) {
-      setCommentError(
-        "Please login before commenting."
-      );
+    clearMessages();
+
+    // 1. Is user logged in? Wait for auth initialization if in progress
+    let userToUse = activeUser;
+    if (!userToUse && (isAuthInitializing || authContext?.loading)) {
+      for (let i = 0; i < 6; i++) {
+        await new Promise((res) => setTimeout(res, 100));
+        if (auth?.currentUser) {
+          userToUse = {
+            _id: auth.currentUser.uid,
+            uid: auth.currentUser.uid,
+            name: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+            displayName: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+            email: auth.currentUser.email,
+            image: auth.currentUser.photoURL || "",
+          };
+          break;
+        }
+      }
+    }
+
+    if (!userToUse && auth?.currentUser) {
+      userToUse = {
+        _id: auth.currentUser.uid,
+        uid: auth.currentUser.uid,
+        name: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+        displayName: auth.currentUser.displayName || auth.currentUser.email?.split("@")[0] || "User",
+        email: auth.currentUser.email,
+        image: auth.currentUser.photoURL || "",
+      };
+    }
+
+    if (!userToUse) {
+      setCommentError("Please log in before commenting.");
       return;
     }
 
-    if (!newComment.trim()) {
+    // 2. Is video ID available?
+    if (!videoId) {
+      setCommentError("Video not found. Unable to comment.");
+      return;
+    }
+
+    // 3. & 4. Is comment text present and not only whitespace?
+    if (typeof newComment !== "string") {
+      setCommentError("Comment cannot be empty.");
+      return;
+    }
+    const trimmed = newComment.trim();
+    if (!trimmed) {
+      setCommentError("Comment cannot be empty.");
+      return;
+    }
+
+    // 5. Abusive-content detection
+    const abusiveWords = [
+      "idiot",
+      "stupid",
+      "fool",
+      "bitch",
+      "shit",
+      "fuck",
+      "asshole",
+      "bastard",
+    ];
+    const hasAbusive = abusiveWords.some((w) =>
+      new RegExp(`\\b${w}\\b`, "i").test(trimmed)
+    );
+    if (hasAbusive) {
       setCommentError(
-        "Comment cannot be empty."
+        "This comment was blocked because it contains prohibited language."
       );
       return;
     }
 
     setIsSubmitting(true);
-    setCommentError("");
-    setCommentSuccess("");
 
     try {
+      const resolvedUserId =
+        userToUse?._id || userToUse?.uid || userToUse?.id || auth?.currentUser?.uid;
+      const resolvedUserName =
+        userToUse?.name ||
+        userToUse?.displayName ||
+        userToUse?.username ||
+        auth?.currentUser?.displayName ||
+        userToUse?.email?.split("@")[0] ||
+        auth?.currentUser?.email?.split("@")[0] ||
+        "User";
+      const resolvedEmail =
+        userToUse?.email || auth?.currentUser?.email || "";
+
       const commentData = {
         videoid: videoId,
-        userid: user._id,
-        commentbody: newComment.trim(),
-        usercommented:
-          user.name ||
-          user.username ||
-          "Anonymous",
+        videoId: videoId,
+        userid: resolvedUserId,
+        userId: resolvedUserId,
+        commentbody: trimmed,
+        comment: trimmed,
+        usercommented: resolvedUserName,
+        userCommented: resolvedUserName,
+        email: resolvedEmail,
         location: location.trim(),
         showLocation: showLocation,
       };
-
-      /*
-       * IMPORTANT:
-       * 400 is expected when the backend
-       * detects a bad word, spam, etc.
-       * Don't let Axios throw a Runtime Error.
-       */
 
       const res = await axiosInstance.post(
         "/comment/postcomment",
         commentData,
         {
-          validateStatus: (status) =>
-            status >= 200 && status < 500,
+          validateStatus: (status) => status >= 200 && status < 500,
         }
       );
 
-      /* =========================
-         BAD WORD / SPAM BLOCKED
-      ========================= */
-
-      if (res.status === 400) {
+      /* Abusive word or validation failure */
+      if (res.status === 400 || res.status === 401) {
         setCommentError(
           res.data?.message ||
-            "This comment is not allowed. Please change the wording and try again."
+            "This comment was blocked because it contains prohibited language."
         );
-
-        /*
-         * Keep the text in the box so the
-         * user can remove the bad word.
-         */
-
         return;
       }
 
-      /* =========================
-         SUCCESS
-      ========================= */
-
+      /* Success */
       if (
         res.status >= 200 &&
         res.status < 300 &&
-        res.data?.comment
+        (res.data?.comment || res.data?.data)
       ) {
         const createdComment: Comment = {
           _id:
             res.data.data?._id ||
             Date.now().toString(),
-
           videoid: videoId,
-
-          userid: user._id,
-
+          userid: String(resolvedUserId),
           commentbody:
             res.data.data?.commentbody ||
-            newComment.trim(),
-
+            trimmed,
           usercommented:
             res.data.data?.usercommented ||
-            user.name ||
-            user.username ||
-            "Anonymous",
-
+            resolvedUserName,
           commentedon:
             res.data.data?.commentedon ||
             new Date().toISOString(),
-
           location:
             res.data.data?.location ||
             location.trim(),
-
           showLocation:
             res.data.data?.showLocation ||
             false,
-
           likedBy: [],
-
           dislikedBy: [],
-
           reportedBy: [],
-
           reportCount: 0,
-
           reported: false,
         };
 
@@ -227,10 +317,7 @@ const Comments = ({
         setShowLocation(false);
         setShowEmojiPicker(false);
         setCommentError("");
-
-        setCommentSuccess(
-          "Comment posted successfully."
-        );
+        setCommentSuccess("Comment posted successfully.");
 
         setTimeout(() => {
           setCommentSuccess("");
@@ -240,20 +327,10 @@ const Comments = ({
       }
 
       setCommentError(
-        res.data?.message ||
-          "Unable to post the comment."
+        res.data?.message || "Unable to post the comment."
       );
     } catch (error) {
-      console.error(
-        "Comment request error:",
-        error
-      );
-
-      /*
-       * This is now only for real network
-       * or unexpected server problems.
-       */
-
+      console.error("Comment request error:", error);
       setCommentError(
         "Unable to connect to the server. Please try again."
       );
@@ -736,28 +813,21 @@ const Comments = ({
             ========================= */}
 
             {commentError && (
-              <div className="rounded-lg border-2 border-red-400 bg-red-50 p-4 text-red-700">
-
+              <div className="rounded-lg border-2 border-red-500/80 bg-red-50 dark:bg-red-950/40 p-4 text-red-700 dark:text-red-300">
                 <div className="flex items-start gap-3">
-
-                  <span className="text-2xl">
-                    ⚠️
-                  </span>
-
+                  <span className="text-2xl">⚠️</span>
                   <div>
-
                     <p className="font-semibold">
-                      Comment Not Allowed
+                      {commentError.toLowerCase().includes("prohibited") ||
+                      commentError.toLowerCase().includes("blocked") ||
+                      commentError.toLowerCase().includes("abusive") ||
+                      commentError.toLowerCase().includes("spam")
+                        ? "Comment Blocked"
+                        : "Comment Notice"}
                     </p>
-
-                    <p className="text-sm mt-1">
-                      {commentError}
-                    </p>
-
+                    <p className="text-sm mt-1">{commentError}</p>
                   </div>
-
                 </div>
-
               </div>
             )}
 

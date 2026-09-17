@@ -15,7 +15,7 @@ export default function VideoCard({ video }: any) {
   const videoSrc = video?.filepath
     ? video.filepath.startsWith("http")
       ? video.filepath
-      : `${backendUrl}/${video.filepath.replace(/^\/+/, "")}`
+      : `${backendUrl}/${video.filepath.replace(/\\/g, "/").replace(/^\/+/, "")}`
     : "/video/vdo.mp4";
 
   // Only pass a src to AvatarImage if it's a real URL — avoids 404 spam

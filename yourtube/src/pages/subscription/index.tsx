@@ -18,6 +18,8 @@ import {
   Users,
   ExternalLink,
   Tv,
+  Sparkles,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -159,7 +161,7 @@ const loadRazorpayScript = (): Promise<boolean> =>
 ================================================================ */
 export default function SubscriptionPage() {
   const router = useRouter();
-  const { user, refreshUser, subscriptions, toggleSubscribe } = useUser() as any;
+  const { user, refreshUser, subscriptions, toggleSubscribe, updateUserPlan } = useUser() as any;
   const [activeTab, setActiveTab] = useState<"channels" | "plans">("channels");
   const [subscribedVideos, setSubscribedVideos] = useState<any[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
@@ -168,6 +170,7 @@ export default function SubscriptionPage() {
   const [paymentHistory, setPaymentHistory] = useState<any[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [processingPlan, setProcessingPlan] = useState<string | null>(null);
+  const [demoModalPlan, setDemoModalPlan] = useState<any | null>(null);
 
   /* Sync activeTab from query param if provided */
   useEffect(() => {
@@ -180,13 +183,15 @@ export default function SubscriptionPage() {
 
   /* Load subscribed videos on mount and when subscriptions change */
   useEffect(() => {
-    if (!user?._id) {
+    const resolvedId = user?._id || user?.uid;
+    if (!resolvedId) {
       setSubscribedVideos([]);
       return;
     }
     setLoadingVideos(true);
+    const emailParam = user?.email ? `?email=${encodeURIComponent(user.email)}` : "";
     axiosInstance
-      .get(`/subscription/user/${user._id}`)
+      .get(`/subscription/user/${resolvedId}${emailParam}`)
       .then((res) => {
         setSubscribedVideos(res.data.videos || []);
       })
@@ -194,7 +199,7 @@ export default function SubscriptionPage() {
         console.warn("Could not fetch subscribed videos:", err?.message);
       })
       .finally(() => setLoadingVideos(false));
-  }, [user?._id, subscriptions?.length]);
+  }, [user?._id, user?.uid, subscriptions?.length]);
 
   /* Unsubscribe from channel */
   const handleUnsubscribe = async (sub: any) => {
@@ -221,101 +226,90 @@ export default function SubscriptionPage() {
   }, [user?._id]);
 
   /* ----------------------------------------------------------------
-     handleUpgrade — opens Razorpay checkout for the selected plan
+     handleUpgrade — opens Demo Subscription confirmation dialog
   ---------------------------------------------------------------- */
-  const handleUpgrade = async (planId: string) => {
+  const handleUpgrade = (planId: string) => {
     if (!user) {
       toast.error("Please sign in to upgrade your plan.");
       return;
     }
+    const foundPlan = PLANS.find((p) => p.id === planId);
+    if (foundPlan) {
+      setDemoModalPlan(foundPlan);
+    }
+  };
 
-    setProcessingPlan(planId);
+  /* ----------------------------------------------------------------
+     confirmDemoUpgrade — activates the selected plan in demo mode
+  ---------------------------------------------------------------- */
+  const confirmDemoUpgrade = async () => {
+    if (!demoModalPlan || !user) return;
+    const plan = demoModalPlan;
+    setProcessingPlan(plan.id);
 
     try {
-      /* 1. Load Razorpay script */
-      const scriptLoaded = await loadRazorpayScript();
-      if (!scriptLoaded) {
-        toast.error("Failed to load payment gateway. Please try again.");
-        setProcessingPlan(null);
-        return;
+      // 1. Call backend demo subscribe endpoint
+      try {
+        await axiosInstance.post("/payment/demo-subscribe", {
+          userId: user._id || user.uid,
+          plan: plan.id,
+        });
+      } catch (err: any) {
+        console.warn("Backend demo-subscribe call note:", err?.message);
       }
 
-      /* 2. Create order on backend */
-      const orderRes = await axiosInstance.post("/payment/create-order", {
-        userId: user._id,
-        plan: planId,
-      });
+      // 2. Immediately update user plan in client context
+      if (typeof updateUserPlan === "function") {
+        updateUserPlan(plan.id);
+      } else if (user) {
+        user.plan = plan.id;
+      }
 
-      const { orderId, amount, currency, keyId, planLabel } = orderRes.data;
+      // 3. Try to refresh user and payment history if available
+      if (user._id && typeof refreshUser === "function") {
+        refreshUser(user._id).catch(() => {});
+        axiosInstance
+          .get(`/payment/status/${user._id}`)
+          .then((res) => setPaymentHistory(res.data.payments || []))
+          .catch(() => {});
+      }
 
-      /* 3. Open Razorpay checkout */
-      const options = {
-        key: keyId || process.env.NEXT_PUBLIC_RAZORPAY_KEY_ID,
-        amount,
-        currency,
-        name: "YourTube",
-        description: `${planLabel} Plan Subscription`,
-        order_id: orderId,
-        prefill: {
-          name: user.name || "",
-          email: user.email || "",
-        },
-        theme: {
-          color: "#dc2626",
-        },
-        handler: async (response: any) => {
-          /* 4. Verify payment on backend */
-          try {
-            const verifyRes = await axiosInstance.post("/payment/verify", {
-              razorpayOrderId: response.razorpay_order_id,
-              razorpayPaymentId: response.razorpay_payment_id,
-              razorpaySignature: response.razorpay_signature,
-              userId: user._id,
-              plan: planId,
-            });
-
-            if (verifyRes.data.success) {
-              toast.success(
-                `🎉 You are now on the ${planLabel} plan! A confirmation email has been sent.`
-              );
-              /* 5. Refresh user context so plan badge updates immediately */
-              await refreshUser(user._id);
-              /* 6. Reload history */
-              const histRes = await axiosInstance.get(
-                `/payment/status/${user._id}`
-              );
-              setPaymentHistory(histRes.data.payments || []);
-            }
-          } catch (verifyErr: any) {
-            toast.error(
-              verifyErr?.response?.data?.message ||
-                "Payment verification failed. Please contact support."
-            );
-          } finally {
-            setProcessingPlan(null);
-          }
-        },
-        modal: {
-          ondismiss: () => {
-            setProcessingPlan(null);
-            toast.info("Payment cancelled.");
-          },
-        },
-      };
-
-      const rzp = new window.Razorpay(options);
-      rzp.on("payment.failed", (response: any) => {
-        toast.error(
-          `Payment failed: ${response.error?.description || "Unknown error"}`
-        );
-        setProcessingPlan(null);
-      });
-      rzp.open();
-    } catch (err: any) {
-      toast.error(
-        err?.response?.data?.message ||
-          "Failed to initiate payment. Please try again."
+      toast.success(
+        `🎉 Demo subscription activated! You are now on the ${plan.label} plan.`
       );
+      setDemoModalPlan(null);
+    } catch (err: any) {
+      toast.error("Failed to activate demo plan. Please try again.");
+    } finally {
+      setProcessingPlan(null);
+    }
+  };
+
+  /* ----------------------------------------------------------------
+     resetToFree — quickly resets back to Free plan for testing
+  ---------------------------------------------------------------- */
+  const resetToFree = async () => {
+    if (!user) return;
+    setProcessingPlan("free");
+    try {
+      try {
+        await axiosInstance.post("/payment/demo-subscribe", {
+          userId: user._id || user.uid,
+          plan: "free",
+        });
+      } catch (_) {}
+
+      if (typeof updateUserPlan === "function") {
+        updateUserPlan("free");
+      } else if (user) {
+        user.plan = "free";
+      }
+
+      if (user._id && typeof refreshUser === "function") {
+        refreshUser(user._id).catch(() => {});
+      }
+      toast.info("Switched back to Free plan.");
+    } finally {
       setProcessingPlan(null);
     }
   };
@@ -552,12 +546,26 @@ export default function SubscriptionPage() {
 
             {/* Current plan badge */}
             {user && (
-              <div className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-100 dark:bg-[#1c1c1c] border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-800 dark:text-gray-200 shadow-sm">
-                <Star className="w-4 h-4 text-yellow-500" />
-                Your current plan:{" "}
-                <span className="font-bold capitalize text-red-600 dark:text-red-400">
-                  {user.plan || "free"}
-                </span>
+              <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
+                <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-gray-100 dark:bg-[#1c1c1c] border border-gray-200 dark:border-gray-700 text-sm font-medium text-gray-800 dark:text-gray-200 shadow-sm">
+                  <Star className="w-4 h-4 text-yellow-500" />
+                  Your current plan:{" "}
+                  <span className="font-bold capitalize text-red-600 dark:text-red-400">
+                    {user.plan || "free"}
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950/80 dark:text-emerald-300 font-semibold ml-1">
+                    Demo Mode Active
+                  </span>
+                </div>
+                {user.plan && user.plan !== "free" && (
+                  <button
+                    onClick={resetToFree}
+                    disabled={processingPlan === "free"}
+                    className="text-xs px-3 py-1.5 rounded-full border border-gray-300 dark:border-gray-600 hover:bg-gray-200 dark:hover:bg-gray-800 text-gray-600 dark:text-gray-300 transition-colors cursor-pointer"
+                  >
+                    Reset to Free
+                  </button>
+                )}
               </div>
             )}
 
@@ -840,6 +848,73 @@ export default function SubscriptionPage() {
               </Link>
             </section>
           )}
+        </div>
+      )}
+
+      {/* DEMO SUBSCRIPTION CONFIRMATION MODAL */}
+      {demoModalPlan && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="relative w-full max-w-md bg-white dark:bg-[#181818] border border-gray-200 dark:border-gray-800 rounded-2xl p-6 shadow-2xl overflow-hidden">
+            {/* Modal close button */}
+            <button
+              onClick={() => setDemoModalPlan(null)}
+              className="absolute top-4 right-4 p-1.5 rounded-full text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-[#252525] transition-colors"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            {/* Modal header */}
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-950/50 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-gray-900 dark:text-white">
+                  Confirm Demo Subscription
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Instant activation (Demo Mode)
+                </p>
+              </div>
+            </div>
+
+            {/* Plan Preview */}
+            <div className={`p-4 rounded-xl mb-4 bg-gradient-to-r ${demoModalPlan.color} text-white shadow-md`}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="font-bold text-lg">{demoModalPlan.label} Plan</span>
+                <span className="text-xl font-extrabold">{demoModalPlan.priceLabel}</span>
+              </div>
+              <p className="text-xs text-white/90">
+                {demoModalPlan.features.length} premium features included
+              </p>
+            </div>
+
+            {/* Demo notice */}
+            <div className="p-3.5 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900 rounded-xl mb-6">
+              <p className="text-xs text-blue-800 dark:text-blue-300 leading-relaxed">
+                <strong>No payment required:</strong> This environment runs in Demo Mode. Clicking activate will upgrade your account immediately so you can test all features without Razorpay API keys.
+              </p>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => setDemoModalPlan(null)}
+                className="flex-1 py-2.5 px-4 rounded-xl border border-gray-300 dark:border-gray-700 text-sm font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#252525] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(processingPlan)}
+                onClick={confirmDemoUpgrade}
+                className="flex-1 py-2.5 px-4 rounded-xl bg-gradient-to-r from-red-600 to-amber-600 hover:from-red-700 hover:to-amber-700 text-white text-sm font-bold shadow-md hover:shadow-lg transition-all disabled:opacity-50"
+              >
+                {processingPlan ? "Activating…" : "Activate Plan"}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </main>

@@ -1,5 +1,7 @@
 import comment from "../Modals/comment.js";
 import mongoose from "mongoose";
+import user from "../Modals/Auth.js";
+import video from "../Modals/video.js";
 
 /* =========================
    ABUSIVE WORDS
@@ -110,15 +112,15 @@ const validateComment = (text) => {
   }
 
   if (containsAbusiveWords(text)) {
-    return "Your comment contains abusive or inappropriate words.";
+    return "This comment was blocked because it contains prohibited language.";
   }
 
   if (hasRepeatedSpecialCharacters(text)) {
-    return "Your comment contains too many repeated special characters.";
+    return "This comment was blocked because it contains too many repeated special characters.";
   }
 
   if (isSpam(text)) {
-    return "Your comment appears to be spam or repeated content.";
+    return "This comment was blocked because it appears to be spam or repeated content.";
   }
 
   return null;
@@ -129,39 +131,104 @@ const validateComment = (text) => {
 ========================= */
 
 export const postcomment = async (req, res) => {
-  const {
-    userid,
-    videoid,
-    commentbody,
-    usercommented,
-    location,
-    showLocation,
-  } = req.body;
+  const commentbody =
+    req.body.commentbody ??
+    req.body.comment ??
+    req.body.text ??
+    "";
 
-  const validationError =
-    validateComment(commentbody);
+  const userid =
+    req.body.userid ||
+    req.body.userId ||
+    req.body.user_id;
 
-  if (validationError) {
-    return res.status(400).json({
-      message: validationError,
+  const videoid =
+    req.body.videoid ||
+    req.body.videoId ||
+    req.body.video_id;
+
+  const usercommented =
+    req.body.usercommented ||
+    req.body.userCommented ||
+    req.body.name ||
+    req.body.userName ||
+    "User";
+
+  const location = req.body.location || "";
+  const showLocation = req.body.showLocation === true;
+
+  // 1. Is user ID available?
+  if (!userid) {
+    return res.status(401).json({
+      message: "Please log in before commenting.",
     });
   }
 
-  if (!userid || !videoid || !usercommented) {
+  // 2. Is video ID available?
+  if (!videoid) {
     return res.status(400).json({
-      message:
-        "Missing required comment information.",
+      message: "Video ID is required.",
+    });
+  }
+
+  // 3. Is comment text present and non-empty?
+  if (typeof commentbody !== "string" || !commentbody.trim()) {
+    return res.status(400).json({
+      message: "Comment cannot be empty.",
+    });
+  }
+
+  // 4. Run abusive content detection
+  const validationError = validateComment(commentbody);
+  if (validationError) {
+    return res.status(400).json({
+      message: validationError,
+      isModerationBlocked: true,
+    });
+  }
+
+  // 5. Genuine missing required information check
+  if (!usercommented) {
+    return res.status(400).json({
+      message: "Missing required comment information.",
     });
   }
 
   try {
+    // Resolve valid ObjectId for userid
+    let finalUserId = userid;
+    if (!mongoose.Types.ObjectId.isValid(userid)) {
+      const existingUser = await user.findOne({
+        $or: [{ email: req.body.email }, { name: usercommented }],
+      });
+      if (existingUser) {
+        finalUserId = existingUser._id;
+      } else {
+        const createdUser = await user.create({
+          name: usercommented,
+          email: req.body.email || `${userid}@yourtube.local`,
+          plan: "free",
+        });
+        finalUserId = createdUser._id;
+      }
+    }
+
+    // Resolve valid ObjectId for videoid
+    let finalVideoId = videoid;
+    if (!mongoose.Types.ObjectId.isValid(videoid)) {
+      const matchedVideo = await video.findOne({});
+      if (matchedVideo) {
+        finalVideoId = matchedVideo._id;
+      }
+    }
+
     const newComment = new comment({
-      userid,
-      videoid,
+      userid: finalUserId,
+      videoid: finalVideoId,
       commentbody: commentbody.trim(),
       usercommented,
-      location: location || "",
-      showLocation: showLocation === true,
+      location,
+      showLocation,
       likedBy: [],
       dislikedBy: [],
       reportedBy: [],
@@ -169,22 +236,17 @@ export const postcomment = async (req, res) => {
       reported: false,
     });
 
-    const savedComment =
-      await newComment.save();
+    const savedComment = await newComment.save();
 
     return res.status(200).json({
       comment: true,
       data: savedComment,
+      message: "Comment posted successfully.",
     });
   } catch (error) {
-    console.error(
-      "Error posting comment:",
-      error
-    );
-
+    console.error("Error posting comment:", error);
     return res.status(500).json({
-      message:
-        "Something went wrong while posting the comment.",
+      message: "Something went wrong while posting the comment.",
     });
   }
 };

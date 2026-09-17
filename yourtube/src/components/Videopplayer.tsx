@@ -22,6 +22,7 @@ import {
   PictureInPicture2,
   Check,
   Radio,
+  SkipForward,
 } from "lucide-react";
 import {
   DropdownMenu,
@@ -59,9 +60,12 @@ const SPEED_OPTIONS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
 
 export default function VideoPlayer({
   video,
+  nextVideo,
+  onNextVideo,
   isWatchPartyActive,
   onSyncAction,
   incomingSync,
+  autoPlay,
 }: VideoPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -80,6 +84,14 @@ export default function VideoPlayer({
   const [showControls, setShowControls] = useState(true);
   const [isDraggingProgress, setIsDraggingProgress] = useState(false);
 
+  // Seeking feedback & Autoplay Countdown states
+  const [seekFeedback, setSeekFeedback] = useState<"-10" | "+10" | null>(null);
+  const seekFeedbackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const [autoplayCountdown, setAutoplayCountdown] = useState<number | null>(null);
+  const autoplayTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastTouchRef = useRef<{ time: number; x: number; y: number } | null>(null);
+  const singleTapTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
   const controlsTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isIncomingSyncRef = useRef(false);
 
@@ -90,15 +102,25 @@ export default function VideoPlayer({
       return video.filepath;
     }
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
-    const cleanPath = video.filepath.replace(/^\/+/, "");
+    const cleanPath = video.filepath.replace(/\\/g, "/").replace(/^\/+/, "");
     return `${backendUrl}/${cleanPath}`;
   }, [video?.filepath]);
 
-  // Clean unmount: pause and detach video
+  // Clean unmount: pause and detach video & clear timers
   useEffect(() => {
     return () => {
       if (controlsTimeoutRef.current) {
         clearTimeout(controlsTimeoutRef.current);
+      }
+      if (autoplayTimerRef.current) {
+        clearInterval(autoplayTimerRef.current);
+        autoplayTimerRef.current = null;
+      }
+      if (seekFeedbackTimeoutRef.current) {
+        clearTimeout(seekFeedbackTimeoutRef.current);
+      }
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current);
       }
       if (videoRef.current) {
         try {
@@ -136,6 +158,28 @@ export default function VideoPlayer({
     return () => clearTimeout(timer);
   }, [incomingSync]);
 
+  // Handle Autoplay if requested
+  useEffect(() => {
+    if (autoPlay && videoRef.current) {
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setIsPlaying(true);
+          })
+          .catch((err) => {
+            // Autoplay with sound is often blocked by browsers; fallback to muted autoplay
+            console.warn("Autoplay audio blocked, attempting muted autoplay:", err?.message);
+            if (videoRef.current) {
+              videoRef.current.muted = true;
+              setIsMuted(true);
+              videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+            }
+          });
+      }
+    }
+  }, [autoPlay, videoSrc]);
+
   const broadcastSync = (action: "play" | "pause" | "seek", time: number) => {
     if (isWatchPartyActive && onSyncAction && !isIncomingSyncRef.current) {
       onSyncAction(action, time);
@@ -171,6 +215,12 @@ export default function VideoPlayer({
   const togglePlay = () => {
     if (!videoRef.current) return;
     if (videoRef.current.paused || videoRef.current.ended) {
+      // Pause any other <video> elements currently playing
+      document.querySelectorAll<HTMLVideoElement>("video").forEach((v) => {
+        if (v !== videoRef.current && !v.paused) {
+          v.pause();
+        }
+      });
       videoRef.current
         .play()
         .then(() => {
@@ -186,6 +236,17 @@ export default function VideoPlayer({
     }
   };
 
+
+  const triggerSeekFeedback = (type: "-10" | "+10") => {
+    if (seekFeedbackTimeoutRef.current) {
+      clearTimeout(seekFeedbackTimeoutRef.current);
+    }
+    setSeekFeedback(type);
+    seekFeedbackTimeoutRef.current = setTimeout(() => {
+      setSeekFeedback(null);
+    }, 650);
+  };
+
   // Seek by delta
   const seekBy = (seconds: number) => {
     if (!videoRef.current) return;
@@ -196,6 +257,7 @@ export default function VideoPlayer({
     videoRef.current.currentTime = target;
     setCurrentTime(target);
     broadcastSync("seek", target);
+    triggerSeekFeedback(seconds < 0 ? "-10" : "+10");
     resetControlsTimer();
   };
 
@@ -355,12 +417,103 @@ export default function VideoPlayer({
     }
   };
 
+  const cancelAutoplayCountdown = () => {
+    if (autoplayTimerRef.current) {
+      clearInterval(autoplayTimerRef.current);
+      autoplayTimerRef.current = null;
+    }
+    setAutoplayCountdown(null);
+  };
+
+  const handleNextClick = () => {
+    cancelAutoplayCountdown();
+    if (videoRef.current) {
+      videoRef.current.pause();
+    }
+    setIsPlaying(false);
+    if (onNextVideo) {
+      onNextVideo();
+    }
+  };
+
   const handleVideoEnded = () => {
     if (videoRef.current) {
       videoRef.current.pause();
     }
     setIsPlaying(false);
     setShowControls(true);
+
+    if (nextVideo && onNextVideo) {
+      cancelAutoplayCountdown();
+      let remaining = 5;
+      setAutoplayCountdown(remaining);
+      autoplayTimerRef.current = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          cancelAutoplayCountdown();
+          onNextVideo();
+        } else {
+          setAutoplayCountdown(remaining);
+        }
+      }, 1000);
+    } else if (onNextVideo) {
+      onNextVideo();
+    }
+  };
+
+  // Mobile double-tap gesture handling
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (
+      target.closest("button") ||
+      target.closest("input") ||
+      target.closest("[role='menu']") ||
+      target.closest("[data-radix-popper-content-wrapper]")
+    ) {
+      return;
+    }
+
+    const touch = e.changedTouches[0];
+    if (!touch || !containerRef.current) return;
+
+    const now = Date.now();
+    const rect = containerRef.current.getBoundingClientRect();
+    const touchX = touch.clientX - rect.left;
+    const touchY = touch.clientY - rect.top;
+
+    const prevTouch = lastTouchRef.current;
+
+    if (
+      prevTouch &&
+      now - prevTouch.time < 320 &&
+      Math.abs(touchX - prevTouch.x) < 40 &&
+      Math.abs(touchY - prevTouch.y) < 40
+    ) {
+      // Double tap detected!
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current);
+        singleTapTimeoutRef.current = null;
+      }
+      lastTouchRef.current = null;
+
+      if (touchX < rect.width * 0.45) {
+        seekBy(-10);
+      } else if (touchX > rect.width * 0.55) {
+        seekBy(10);
+      } else {
+        togglePlay();
+      }
+    } else {
+      lastTouchRef.current = { time: now, x: touchX, y: touchY };
+      if (singleTapTimeoutRef.current) {
+        clearTimeout(singleTapTimeoutRef.current);
+      }
+      singleTapTimeoutRef.current = setTimeout(() => {
+        setShowControls((prev) => !prev);
+        resetControlsTimer();
+        singleTapTimeoutRef.current = null;
+      }, 280);
+    }
   };
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
@@ -375,6 +528,7 @@ export default function VideoPlayer({
       }`}
       onMouseMove={resetControlsTimer}
       onMouseEnter={() => setShowControls(true)}
+      onTouchEnd={handleTouchEnd}
     >
       {/* HTML5 Video Element */}
       <video
@@ -413,6 +567,55 @@ export default function VideoPlayer({
           <div className="flex flex-col items-center gap-2">
             <Loader2 className="h-10 w-10 animate-spin text-red-600" />
             <span className="text-xs font-medium text-white/90">Loading...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Seeking Visual Feedback Badge: Left (-10s) */}
+      {seekFeedback === "-10" && (
+        <div className="pointer-events-none absolute left-8 top-1/2 -translate-y-1/2 z-30 flex flex-col items-center justify-center bg-black/75 backdrop-blur-md text-white rounded-full h-20 w-20 shadow-2xl border border-white/20 animate-in fade-in zoom-in-75 duration-200">
+          <RotateCcw className="h-7 w-7 text-white mb-0.5 animate-pulse" />
+          <span className="text-xs font-bold tracking-wider">-10s</span>
+        </div>
+      )}
+
+      {/* Seeking Visual Feedback Badge: Right (+10s) */}
+      {seekFeedback === "+10" && (
+        <div className="pointer-events-none absolute right-8 top-1/2 -translate-y-1/2 z-30 flex flex-col items-center justify-center bg-black/75 backdrop-blur-md text-white rounded-full h-20 w-20 shadow-2xl border border-white/20 animate-in fade-in zoom-in-75 duration-200">
+          <RotateCw className="h-7 w-7 text-white mb-0.5 animate-pulse" />
+          <span className="text-xs font-bold tracking-wider">+10s</span>
+        </div>
+      )}
+
+      {/* Autoplay Next Video Countdown Overlay */}
+      {autoplayCountdown !== null && nextVideo && (
+        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="max-w-sm w-full bg-[#181818] border border-white/10 rounded-2xl p-5 text-white shadow-2xl flex flex-col items-center text-center">
+            <div className="relative mb-3 flex items-center justify-center">
+              <div className="h-16 w-16 rounded-full border-4 border-white/20 border-t-red-600 animate-spin" />
+              <span className="absolute text-xl font-bold">{autoplayCountdown}</span>
+            </div>
+            <p className="text-xs uppercase tracking-wider text-gray-400 font-semibold mb-1">
+              Up Next in {autoplayCountdown}s
+            </p>
+            <h4 className="text-sm font-semibold line-clamp-2 mb-4 px-2">
+              {nextVideo.videotitle || "Next Video"}
+            </h4>
+            <div className="flex items-center gap-3 w-full">
+              <button
+                onClick={cancelAutoplayCountdown}
+                className="flex-1 py-2 px-4 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium text-xs transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleNextClick}
+                className="flex-1 py-2 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-medium text-xs transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-lg"
+              >
+                <Play className="h-3.5 w-3.5 fill-white" />
+                <span>Play Now</span>
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -473,6 +676,17 @@ export default function VideoPlayer({
             >
               <RotateCw className="h-5 w-5" />
               <span className="absolute text-[9px] font-bold">10</span>
+            </button>
+
+            {/* Next Video */}
+            <button
+              onClick={handleNextClick}
+              disabled={!nextVideo}
+              className="flex h-9 w-9 items-center justify-center rounded-full hover:bg-white/20 transition-colors cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+              title={nextVideo ? `Next: ${nextVideo?.videotitle || "Next video"}` : "No next video"}
+              aria-label="Next video"
+            >
+              <SkipForward className="h-5 w-5 fill-white" />
             </button>
 
             {/* Volume */}

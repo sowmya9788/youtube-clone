@@ -35,7 +35,7 @@ export default function RelatedVideos({ videos }: RelatedVideosProps) {
         const videoSrc = video?.filepath
           ? video.filepath.startsWith("http")
             ? video.filepath
-            : `${backendUrl}/${video.filepath.replace(/^\/+/, "")}`
+            : `${backendUrl}/${video.filepath.replace(/\\/g, "/").replace(/^\/+/, "")}`
           : "/video/vdo.mp4";
 
         return (

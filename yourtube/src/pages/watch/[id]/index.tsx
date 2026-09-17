@@ -11,7 +11,8 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 export default function WatchPage() {
   const router = useRouter();
   const { id, party, autoplay } = router.query;
-  const { user } = useUser() as any;
+  const { user, currentUser, loading: authLoading } = useUser() as any;
+  const activeUser = user || currentUser;
 
   const [currentVideo, setCurrentVideo] = useState<any>(null);
   const [allVideos, setAllVideos] = useState<any[]>([]);
@@ -199,7 +200,11 @@ export default function WatchPage() {
               />
             )}
 
-            <Comments videoId={id as string} />
+            <Comments
+              videoId={id as string}
+              user={activeUser}
+              authLoading={authLoading}
+            />
           </div>
 
           {/* Right Column (Watch Party Panel or Related Videos) */}

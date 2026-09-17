@@ -31,7 +31,8 @@ const VideoInfo = ({ video, onStartWatchParty, isPartyActive }: any) => {
 
   const { user, isSubscribed: checkSubscribed, toggleSubscribe } = useUser() as any;
   const isSubscribed = checkSubscribed ? checkSubscribed(video?.uploader, video?.videochanel) : false;
-  const isOwner = user && video?.uploader && user?._id === video?.uploader;
+  const isOwner = user && video?.uploader &&
+    (user?._id === video?.uploader || user?.uid === video?.uploader);
 
   useEffect(() => {
     setlikes(video.Like || 0);
@@ -52,6 +53,8 @@ const VideoInfo = ({ video, onStartWatchParty, isPartyActive }: any) => {
       await toggleSubscribe({
         channelId: video?.uploader,
         channelName: video?.videochanel,
+        email: user?.email,
+        userName: user?.name || user?.displayName,
       });
     } finally {
       setSubscribing(false);

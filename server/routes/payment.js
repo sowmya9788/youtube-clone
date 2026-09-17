@@ -3,9 +3,13 @@ import {
   createOrder,
   verifyPayment,
   getSubscriptionStatus,
+  demoSubscribe,
 } from "../controllers/payment.js";
 
 const routes = express.Router();
+
+/* POST /payment/demo-subscribe  — activate demo plan without Razorpay keys */
+routes.post("/demo-subscribe", demoSubscribe);
 
 /* POST /payment/create-order   — create a Razorpay order  */
 routes.post("/create-order", createOrder);

@@ -143,6 +143,29 @@ export const createOrder = async (req, res) => {
     }
 
     /*
+     * If Razorpay keys are not configured, handle with mock order
+     */
+    if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+      const mockOrderId = `demo_order_${Date.now()}`;
+      await Payment.create({
+        userId,
+        plan,
+        amount: planInfo.amountINR,
+        razorpayOrderId: mockOrderId,
+        status: "created",
+      });
+
+      return res.status(200).json({
+        orderId: mockOrderId,
+        amount: planInfo.amountPaise,
+        currency: "INR",
+        keyId: "demo_key",
+        planLabel: planInfo.label,
+        isDemo: true,
+      });
+    }
+
+    /*
      * Create a Razorpay order.
      */
     const razorpay = getRazorpay();
@@ -180,6 +203,54 @@ export const createOrder = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to create payment order." });
+  }
+};
+
+/* =======================================================
+   CONTROLLER: POST /payment/demo-subscribe
+   Body: { userId, plan }
+======================================================= */
+export const demoSubscribe = async (req, res) => {
+  try {
+    const { userId, plan } = req.body;
+    if (!userId || !plan) {
+      return res.status(400).json({ message: "userId and plan are required." });
+    }
+    const planInfo = PLAN_DETAILS[plan];
+    if (!planInfo && plan !== "free") {
+      return res.status(400).json({ message: "Invalid plan selected." });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { $set: { plan } },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    // Also record in Payment collection for history
+    await Payment.create({
+      userId,
+      plan,
+      amount: planInfo ? planInfo.amountINR : 0,
+      razorpayOrderId: `demo_order_${Date.now()}`,
+      razorpayPaymentId: `demo_pay_${Date.now()}`,
+      razorpaySignature: "demo_signature",
+      status: "paid",
+      transactionDate: new Date(),
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Successfully upgraded to ${planInfo?.label || plan} (Demo Mode)!`,
+      user: updatedUser,
+    });
+  } catch (error) {
+    console.error("Demo subscribe error:", error);
+    return res.status(500).json({ message: "Failed to activate demo subscription." });
   }
 };
 

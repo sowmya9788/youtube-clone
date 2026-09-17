@@ -1,402 +1,467 @@
-import { onAuthStateChanged, signInWithPopup, signOut } from "firebase/auth";
-import { useState, useEffect, useContext, createContext } from "react";
-import { provider, auth } from "./firebase";
+"use client";
+
+import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
+import {
+  onAuthStateChanged,
+  signInWithPopup,
+  GoogleAuthProvider,
+  signOut,
+} from "firebase/auth";
+import { auth } from "./firebase";
 import axiosInstance from "./axiosinstance";
-import { toast } from "sonner";
 
-const UserContext = createContext();
+// ─── Context ─────────────────────────────────────────────────────────────────
+const UserContext = createContext(null);
 
-// Helper to generate or retrieve a persistent client device identifier
-const getClientDeviceId = () => {
-  if (typeof window === "undefined") return "server_device";
-  let deviceId = localStorage.getItem("yt_device_id");
-  if (!deviceId) {
-    deviceId =
-      "dev_" +
-      Math.random().toString(36).substring(2, 10) +
-      "_" +
-      Date.now().toString(36);
-    localStorage.setItem("yt_device_id", deviceId);
-  }
-  return deviceId;
-};
-
-// Helper to apply theme to document root
-const applyThemeToDOM = (themeMode) => {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  if (themeMode === "dark") {
-    root.classList.add("dark");
-  } else {
-    root.classList.remove("dark");
-  }
-};
-
-export const UserProvider = ({ children }) => {
+// ─── Provider ────────────────────────────────────────────────────────────────
+export function UserProvider({ children }) {
+  // ── Auth / User state ──
   const [user, setUser] = useState(null);
-  const [theme, setTheme] = useState("light");
+  const [loading, setLoading] = useState(true);
+
+  // ── UI state ──
+  const [theme, setTheme] = useState("dark");
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+
+  // ── Subscription state ──
   const [subscriptions, setSubscriptions] = useState([]);
-  const [loadingSubscriptions, setLoadingSubscriptions] = useState(false);
 
-  const toggleSidebar = (forcedState) => {
-    if (typeof forcedState === "boolean") {
-      setIsSidebarCollapsed(forcedState);
-    } else {
-      setIsSidebarCollapsed((prev) => !prev);
-    }
-  };
-
-  // Fetch subscriptions from backend
-  const fetchSubscriptions = async (userId) => {
-    const targetId = userId || user?._id;
-    if (!targetId) {
-      setSubscriptions([]);
-      return;
-    }
-    setLoadingSubscriptions(true);
-    try {
-      const res = await axiosInstance.get(`/subscription/user/${targetId}`);
-      setSubscriptions(res.data.subscriptions || []);
-    } catch (err) {
-      console.warn("Could not fetch subscriptions:", err?.message);
-    } finally {
-      setLoadingSubscriptions(false);
-    }
-  };
-
-  // Helper to check if currently subscribed to a channel
-  const isSubscribed = (channelId, channelName) => {
-    if (!subscriptions || subscriptions.length === 0) return false;
-    return subscriptions.some((s) => {
-      const subId = s.channel?._id || s.channel;
-      if (channelId && subId && String(channelId) === String(subId)) {
-        return true;
-      }
-      if (
-        channelName &&
-        s.channelName &&
-        s.channelName.toLowerCase().trim() === String(channelName).toLowerCase().trim()
-      ) {
-        return true;
-      }
-      return false;
-    });
-  };
-
-  // Subscribe / Unsubscribe toggle
-  const toggleSubscribe = async ({ channelId, channelName }) => {
-    if (!user?._id) {
-      toast.error("Please sign in to subscribe to channels");
-      return { success: false, message: "Not signed in" };
-    }
-
-    try {
-      const res = await axiosInstance.post("/subscription/toggle", {
-        userId: user._id,
-        channelId,
-        channelName,
-      });
-
-      const { subscribed, subscription: newSub, message } = res.data;
-
-      if (subscribed && newSub) {
-        setSubscriptions((prev) => [
-          newSub,
-          ...prev.filter((s) => {
-            const sId = s.channel?._id || s.channel;
-            const matchesId = channelId && sId && String(sId) === String(channelId);
-            const matchesName =
-              channelName &&
-              s.channelName &&
-              s.channelName.toLowerCase().trim() === String(channelName).toLowerCase().trim();
-            return !matchesId && !matchesName;
-          }),
-        ]);
-        toast.success(message || "Subscribed!");
-      } else {
-        setSubscriptions((prev) =>
-          prev.filter((s) => {
-            const sId = s.channel?._id || s.channel;
-            const matchesId = channelId && sId && String(sId) === String(channelId);
-            const matchesName =
-              channelName &&
-              s.channelName &&
-              s.channelName.toLowerCase().trim() === String(channelName).toLowerCase().trim();
-            return !matchesId && !matchesName;
-          })
-        );
-        toast.info(message || "Unsubscribed");
-      }
-
-      return { success: true, subscribed, message };
-    } catch (err) {
-      console.error("toggleSubscribe error:", err);
-      const errMsg =
-        err?.response?.data?.message || "Failed to update subscription";
-      toast.error(errMsg);
-      return { success: false, message: errMsg };
-    }
-  };
-
-  // OTP Verification modal state
+  // ── OTP modal state ──
   const [otpState, setOtpState] = useState({
     isOpen: false,
-    tempToken: null,
-    email: null,
-    location: null,
+    email: "",
     device: null,
-    message: null,
-    pendingFirebaseUser: null,
+    location: null,
+    token: null,
   });
 
-  // Login handler
-  const login = (userdata) => {
-    setUser(userdata);
-    localStorage.setItem("user", JSON.stringify(userdata));
-    if (userdata?.theme) {
-      setTheme(userdata.theme);
-      localStorage.setItem("theme", userdata.theme);
-      applyThemeToDOM(userdata.theme);
-    }
-  };
-
-  // Logout handler
-  const logout = async () => {
-    setUser(null);
-    setSubscriptions([]);
-    localStorage.removeItem("user");
-    try {
-      await signOut(auth);
-    } catch (error) {
-      console.error("Error during sign out:", error);
-    }
-  };
-
-  // Manual theme switcher
-  const toggleTheme = async (newTheme) => {
-    const selectedTheme =
-      newTheme || (theme === "dark" ? "light" : "dark");
-    setTheme(selectedTheme);
-    localStorage.setItem("theme", selectedTheme);
-    applyThemeToDOM(selectedTheme);
-
-    // If user is logged in, sync manual preference to database
-    if (user?._id) {
-      try {
-        await axiosInstance.patch(`/user/theme/${user._id}`, {
-          theme: selectedTheme,
-          themePreference: "manual",
-        });
-        const updatedUser = {
-          ...user,
-          theme: selectedTheme,
-          themePreference: "manual",
-        };
-        setUser(updatedUser);
-        localStorage.setItem("user", JSON.stringify(updatedUser));
-      } catch (err) {
-        console.error("Failed to sync theme to backend:", err);
-      }
-    }
-  };
-
-  // Refresh user plan/profile
-  const refreshUser = async (userId) => {
-    try {
-      const response = await axiosInstance.get(
-        `/payment/status/${userId}`
-      );
-      const updatedUser = {
-        ...user,
-        plan: response.data.plan,
-      };
-      login(updatedUser);
-    } catch (error) {
-      console.error("refreshUser error:", error);
-    }
-  };
-
-  // Unified backend login caller with device & location detection
-  const performBackendLogin = async (firebaseuser) => {
-    const deviceId = getClientDeviceId();
-    const payload = {
-      email: firebaseuser.email,
-      name: firebaseuser.displayName,
-      image: firebaseuser.photoURL || "https://github.com/shadcn.png",
-      deviceId,
-      userAgent: typeof navigator !== "undefined" ? navigator.userAgent : "",
-    };
-
-    const response = await axiosInstance.post("/user/login", payload);
-
-    if (response.data.otpRequired) {
-      // Prompt user with OTP verification dialog
-      setOtpState({
-        isOpen: true,
-        tempToken: response.data.tempToken,
-        email: response.data.email,
-        location: response.data.location,
-        device: response.data.device,
-        message: response.data.message,
-        pendingFirebaseUser: firebaseuser,
-      });
-      return { otpRequired: true };
-    } else {
-      login(response.data.result);
-      return { otpRequired: false, result: response.data.result };
-    }
-  };
-
-  // Google sign in popup trigger
-  const handlegooglesignin = async () => {
-    try {
-      const result = await signInWithPopup(auth, provider);
-      await performBackendLogin(result.user);
-    } catch (error) {
-      console.error("Google sign in error:", error);
-    }
-  };
-
-  // Verify OTP submission
-  const verifyOtp = async (otpCode) => {
-    if (!otpState.tempToken) {
-      throw new Error("No active verification session");
-    }
-    const deviceId = getClientDeviceId();
-    const response = await axiosInstance.post("/user/verify-otp", {
-      tempToken: otpState.tempToken,
-      otp: otpCode,
-      deviceId,
-    });
-
-    if (response.data.success && response.data.result) {
-      login(response.data.result);
-      setOtpState({
-        isOpen: false,
-        tempToken: null,
-        email: null,
-        location: null,
-        device: null,
-        message: null,
-        pendingFirebaseUser: null,
-      });
-      return response.data;
-    }
-    return response.data;
-  };
-
-  // Resend OTP
-  const resendOtp = async () => {
-    if (!otpState.tempToken) {
-      throw new Error("No active verification session");
-    }
-    const response = await axiosInstance.post("/user/resend-otp", {
-      tempToken: otpState.tempToken,
-    });
-    return response.data;
-  };
-
-  // Cancel OTP modal
-  const cancelOtp = async () => {
-    setOtpState({
-      isOpen: false,
-      tempToken: null,
-      email: null,
-      location: null,
-      device: null,
-      message: null,
-      pendingFirebaseUser: null,
-    });
-    await logout();
-  };
-
-  // Initial theme and authentication hydration
+  // ─── Hydration: initial load from localStorage ─────────────────────────────
   useEffect(() => {
-    // 1. Initial theme load from localStorage or fallback
-    const savedTheme = localStorage.getItem("theme");
-    if (savedTheme) {
+    try {
+      const savedTheme = localStorage.getItem("theme") || "dark";
       setTheme(savedTheme);
-      applyThemeToDOM(savedTheme);
-    }
+      document.documentElement.classList.toggle("dark", savedTheme === "dark");
 
-    // 2. Initial user load from localStorage
-    const savedUserStr = localStorage.getItem("user");
-    if (savedUserStr) {
-      try {
+      const savedUserStr = localStorage.getItem("user");
+      if (savedUserStr) {
         const savedUser = JSON.parse(savedUserStr);
-        setUser(savedUser);
-        if (savedUser.theme) {
-          setTheme(savedUser.theme);
-          applyThemeToDOM(savedUser.theme);
-        }
-      } catch (e) {}
-    }
-
-    // 3. Listen to Firebase auth state
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseuser) => {
-      if (firebaseuser) {
-        try {
-          // If we already have a logged-in user in state with matching email, skip re-login
-          const currentStored = localStorage.getItem("user");
-          if (currentStored) {
-            const parsed = JSON.parse(currentStored);
-            if (parsed.email === firebaseuser.email) {
-              setUser(parsed);
-              if (parsed.theme) {
-                setTheme(parsed.theme);
-                applyThemeToDOM(parsed.theme);
-              }
-              return;
-            }
-          }
-          await performBackendLogin(firebaseuser);
-        } catch (error) {
-          console.error("Auth state login error:", error);
-          logout();
+        if (savedUser) {
+          setUser(savedUser);
         }
       }
-    });
-
-    return () => unsubscribe();
+    } catch (_) {}
   }, []);
 
-  // Fetch subscriptions whenever user is authenticated
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === "dark" ? "light" : "dark";
+      try {
+        localStorage.setItem("theme", next);
+        document.documentElement.classList.toggle("dark", next === "dark");
+      } catch (_) {}
+      return next;
+    });
+  }, []);
+
+  // ─── Sidebar toggle ───────────────────────────────────────────────────────
+  const toggleSidebar = useCallback(() => {
+    setIsSidebarCollapsed((prev) => !prev);
+  }, []);
+
+  // ─── Sync Firebase user with backend ─────────────────────────────────────
+  const syncUserWithBackend = useCallback(async (firebaseUser) => {
+    if (!firebaseUser) return null;
+    try {
+      // Server route: POST /user/login — takes {email, name, image}
+      const res = await axiosInstance.post("/user/login", {
+        email: firebaseUser.email,
+        name: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "User",
+        image: firebaseUser.photoURL || "",
+        deviceId: "web_firebase_oauth",
+      });
+
+      const data = res?.data;
+
+      // Server returns { result: user, otpRequired: bool } OR { otpRequired: true, token: ... }
+      if (data?.otpRequired && data?.token) {
+        // OTP flow — open the OTP modal
+        setOtpState({
+          isOpen: true,
+          email: firebaseUser.email,
+          device: data.device || null,
+          location: data.location || null,
+          token: data.token,
+        });
+        return null; // user not set until OTP verified
+      }
+
+      const backendUser = data?.result || data?.user || data;
+      return backendUser || null;
+    } catch (err) {
+      console.warn("Backend sync failed, using Firebase user directly:", err?.message);
+      // Fallback: use Firebase user directly (app still works without backend)
+      return {
+        _id: firebaseUser.uid,
+        uid: firebaseUser.uid,
+        name: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "User",
+        email: firebaseUser.email,
+        image: firebaseUser.photoURL || "",
+        plan: "free",
+      };
+    }
+  }, []);
+
+  // ─── Fetch subscriptions (declared before onAuthStateChanged so it is initialized first) ───
+  const fetchSubscriptions = useCallback(async (userId, email) => {
+    if (!userId) return;
+    try {
+      const userEmail = email || user?.email || "";
+      const queryParam = userEmail ? `?email=${encodeURIComponent(userEmail)}` : "";
+      const res = await axiosInstance.get(`/subscription/user/${userId}${queryParam}`);
+      // Server may return { subscriptions: [...] } or just an array
+      const subs = res?.data?.subscriptions || res?.data || [];
+      setSubscriptions(Array.isArray(subs) ? subs : []);
+    } catch (err) {
+      console.warn("Could not load subscriptions:", err?.message);
+      setSubscriptions([]);
+    }
+  }, [user?.email]);
+
+  // ─── Firebase Auth: listen for auth state changes ─────────────────────────
   useEffect(() => {
-    if (user?._id) {
-      fetchSubscriptions(user._id);
+    if (!auth) {
+      // No Auth instance on the server – skip listener
+      return;
+    }
+    let unsubscribe;
+    try {
+      unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (firebaseUser) {
+          const fallback = {
+            _id: firebaseUser.uid,
+            uid: firebaseUser.uid,
+            name: firebaseUser.displayName || firebaseUser.email?.split("@")[0] || "User",
+            email: firebaseUser.email,
+            image: firebaseUser.photoURL || "",
+            plan: "free",
+          };
+
+          // Immediately set active user state from Firebase so comments/interactions don't block
+          setUser((prev) => {
+            if (prev && (prev._id || prev.uid)) return prev;
+            try {
+              localStorage.setItem("user", JSON.stringify(fallback));
+            } catch (_) {}
+            return fallback;
+          });
+
+          const backendUser = await syncUserWithBackend(firebaseUser);
+          if (backendUser) {
+            const mergedUser = {
+              ...backendUser,
+              uid: firebaseUser.uid,
+              _id: backendUser._id || firebaseUser.uid,
+              name: backendUser.name || firebaseUser.displayName || "User",
+              email: backendUser.email || firebaseUser.email,
+              image: backendUser.image || firebaseUser.photoURL || "",
+            };
+            setUser(mergedUser);
+            try {
+              localStorage.setItem("user", JSON.stringify(mergedUser));
+            } catch (_) {}
+            fetchSubscriptions(mergedUser._id || mergedUser.uid, mergedUser.email);
+          }
+        } else {
+          setUser(null);
+          setSubscriptions([]);
+          try {
+            localStorage.removeItem("user");
+          } catch (_) {}
+        }
+        setLoading(false);
+      });
+    } catch (err) {
+      console.error("Firebase auth listener error:", err?.message);
+      setLoading(false);
+    }
+
+    return () => {
+      if (typeof unsubscribe === "function") unsubscribe();
+    };
+  }, [syncUserWithBackend, fetchSubscriptions]);
+
+
+
+  // Sync subscriptions whenever user changes
+  useEffect(() => {
+    const targetUserId = user?._id || user?.uid;
+    if (targetUserId) {
+      fetchSubscriptions(targetUserId, user?.email);
     } else {
       setSubscriptions([]);
+    }
+  }, [user?._id, user?.uid, user?.email, fetchSubscriptions]);
+
+  // ─── Refresh user from backend ────────────────────────────────────────────
+  const refreshUser = useCallback(async (userId) => {
+    const targetId = userId || user?._id;
+    if (!targetId) return;
+    try {
+      // Try dedicated user endpoint first, then channel endpoint
+      const res = await axiosInstance.get(`/user/channel/${targetId}`);
+      const updated = res?.data?.result || res?.data?.user || res?.data;
+      if (updated) setUser(updated);
+    } catch (err) {
+      console.warn("refreshUser failed:", err?.message);
     }
   }, [user?._id]);
 
-  return (
-    <UserContext.Provider
-      value={{
-        user,
-        theme,
-        toggleTheme,
-        isSidebarCollapsed,
-        setIsSidebarCollapsed,
-        toggleSidebar,
-        login,
-        logout,
-        handlegooglesignin,
-        refreshUser,
-        otpState,
-        verifyOtp,
-        resendOtp,
-        cancelOtp,
-        subscriptions,
-        loadingSubscriptions,
-        fetchSubscriptions,
-        isSubscribed,
-        toggleSubscribe,
-      }}
-    >
-      {children}
-    </UserContext.Provider>
-  );
-};
+  // ─── Update User Plan (for Demo/Subscription updates) ─────────────────────
+  const updateUserPlan = useCallback((newPlan) => {
+    setUser((prev) => (prev ? { ...prev, plan: newPlan } : null));
+  }, []);
 
-export const useUser = () => useContext(UserContext);
+  // ─── Login (manual — used by channeldialogue after channel creation) ───────
+  const login = useCallback((userData) => {
+    if (userData) setUser(userData);
+  }, []);
+
+  // ─── Logout ───────────────────────────────────────────────────────────────
+  const logout = useCallback(async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.warn("Firebase signOut error:", err?.message);
+    }
+    setUser(null);
+    setSubscriptions([]);
+  }, []);
+
+  // ─── Google Sign-In ───────────────────────────────────────────────────────
+  const handlegooglesignin = useCallback(async () => {
+    try {
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
+      await signInWithPopup(auth, provider);
+      // onAuthStateChanged fires after successful sign in → sets user
+    } catch (err) {
+      if (
+        err?.code === "auth/popup-closed-by-user" ||
+        err?.code === "auth/cancelled-popup-request"
+      ) {
+        return; // User closed popup — not an error
+      }
+      console.error("Google sign-in error:", err?.message);
+    }
+  }, []);
+
+  // ─── Subscription helpers ─────────────────────────────────────────────────
+  const isSubscribed = useCallback(
+    (uploaderId, channelIdOrName) => {
+      if (!subscriptions?.length) return false;
+      return subscriptions.some((sub) => {
+        const cId = sub?.channel?._id
+          ? String(sub.channel._id)
+          : sub?.channel
+          ? String(sub.channel)
+          : null;
+        const cName =
+          sub?.channelName ||
+          sub?.channel?.channelname ||
+          sub?.channel?.name;
+
+        if (uploaderId && cId && String(uploaderId) === cId) return true;
+        if (channelIdOrName && cId && String(channelIdOrName) === cId) return true;
+        if (
+          channelIdOrName &&
+          cName &&
+          String(cName).toLowerCase() === String(channelIdOrName).toLowerCase()
+        )
+          return true;
+        if (
+          uploaderId &&
+          cName &&
+          String(cName).toLowerCase() === String(uploaderId).toLowerCase()
+        )
+          return true;
+        return false;
+      });
+    },
+    [subscriptions]
+  );
+
+  const toggleSubscribe = useCallback(
+    async (channelIdOrObj) => {
+      const targetUserId = user?._id || user?.uid || user?.id;
+      if (!targetUserId) return;
+      // Accept either a channelId string or { channelId, channelName, email, userName }
+      const channelId =
+        typeof channelIdOrObj === "string"
+          ? channelIdOrObj
+          : channelIdOrObj?.channelId;
+      const channelName =
+        typeof channelIdOrObj === "object"
+          ? channelIdOrObj?.channelName
+          : undefined;
+      const callerEmail =
+        typeof channelIdOrObj === "object"
+          ? channelIdOrObj?.email
+          : undefined;
+      const callerUserName =
+        typeof channelIdOrObj === "object"
+          ? channelIdOrObj?.userName
+          : undefined;
+
+      if (!channelId && !channelName) return;
+
+      const targetChannelName = channelName || "Channel";
+      const currentlySubscribed = isSubscribed(channelId, channelName);
+
+      // Optimistic update
+      if (currentlySubscribed) {
+        setSubscriptions((prev) =>
+          prev.filter((sub) => {
+            const cId = sub?.channel?._id
+              ? String(sub.channel._id)
+              : sub?.channel
+              ? String(sub.channel)
+              : null;
+            const cName =
+              sub?.channelName ||
+              sub?.channel?.channelname ||
+              sub?.channel?.name;
+            if (channelId && cId && cId === String(channelId)) return false;
+            if (
+              cName &&
+              String(cName).toLowerCase() === String(targetChannelName).toLowerCase()
+            )
+              return false;
+            return true;
+          })
+        );
+      } else {
+        const optimisticSub = {
+          _id: `temp_${Date.now()}`,
+          channel: channelId
+            ? {
+                _id: channelId,
+                name: targetChannelName,
+                channelname: targetChannelName,
+              }
+            : null,
+          channelName: targetChannelName,
+          subscribedOn: new Date().toISOString(),
+        };
+        setSubscriptions((prev) => [optimisticSub, ...prev]);
+      }
+
+      try {
+        const res = await axiosInstance.post(`/subscription/toggle`, {
+          userId: targetUserId,
+          email: callerEmail || user?.email,
+          userName: callerUserName || user?.name || user?.displayName,
+          channelId,
+          channelName: targetChannelName,
+        });
+        // Sync with backend truth
+        await fetchSubscriptions(targetUserId, user?.email);
+        return res?.data;
+      } catch (err) {
+        console.warn("toggleSubscribe error:", err?.message);
+        // Rollback on error
+        await fetchSubscriptions(targetUserId, user?.email);
+      }
+    },
+    [user, isSubscribed, fetchSubscriptions]
+  );
+
+
+  // ─── OTP modal handlers ───────────────────────────────────────────────────
+  const openOtpModal = useCallback((email, device, location, token) => {
+    setOtpState({ isOpen: true, email, device, location, token });
+  }, []);
+
+  const cancelOtp = useCallback(() => {
+    setOtpState({ isOpen: false, email: "", device: null, location: null, token: null });
+    // Sign out Firebase session if OTP is cancelled
+    signOut(auth).catch(() => {});
+  }, []);
+
+  const verifyOtp = useCallback(
+    async (otp) => {
+      const res = await axiosInstance.post("/user/verify-otp", {
+        otp,
+        token: otpState.token,
+      });
+      const userData = res?.data?.result || res?.data?.user || res?.data;
+      if (userData) {
+        setUser(userData);
+        fetchSubscriptions(userData._id, userData.email);
+      }
+      cancelOtp();
+      return res?.data;
+    },
+    [otpState.token, fetchSubscriptions, cancelOtp]
+  );
+
+  const resendOtp = useCallback(async () => {
+    const res = await axiosInstance.post("/user/resend-otp", {
+      token: otpState.token,
+    });
+    return res?.data;
+  }, [otpState.token]);
+
+  // ─── Context value ────────────────────────────────────────────────────────
+  const value = {
+    // Core auth
+    user,
+    currentUser: user,
+    firebaseUser: auth?.currentUser || null,
+    loading,
+    login,
+    logout,
+    refreshUser,
+    updateUserPlan,
+    handlegooglesignin,
+    // Google sign-in alias (used by some components with capital G)
+    handleGooglesignin: handlegooglesignin,
+
+    // UI
+    theme,
+    toggleTheme,
+    isSidebarCollapsed,
+    toggleSidebar,
+
+    // Subscriptions
+    subscriptions,
+    isSubscribed,
+    toggleSubscribe,
+    fetchSubscriptions,
+
+    // OTP
+    otpState,
+    openOtpModal,
+    verifyOtp,
+    resendOtp,
+    cancelOtp,
+  };
+
+  return <UserContext.Provider value={value}>{children}</UserContext.Provider>;
+}
+
+// ─── Alias: AuthProvider → UserProvider (used in _app.tsx) ───────────────────
+export const AuthProvider = UserProvider;
+
+// ─── Named hook: useUser ─────────────────────────────────────────────────────
+export function useUser() {
+  const ctx = useContext(UserContext);
+  if (!ctx) {
+    throw new Error("useUser must be used inside UserProvider / AuthProvider");
+  }
+  return ctx;
+}
+
+// ─── Named hook: useAuth (alias for backward compat) ─────────────────────────
+export const useAuth = useUser;
+
+export default UserProvider;
