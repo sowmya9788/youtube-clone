@@ -90,7 +90,11 @@ export default function HistoryContent() {
             <Link href={`/watch/${item.videoid._id}?autoplay=true`} className="flex-shrink-0">
               <div className="relative w-40 aspect-video bg-gray-100 dark:bg-[#202020] rounded-lg overflow-hidden">
                 <video
-                  src={`${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/${item.videoid?.filepath?.replace(/\\/g, "/")?.replace(/^\/+/, "")}`}
+                  src={
+                    item.videoid?.filepath?.startsWith("http")
+                      ? item.videoid.filepath
+                      : `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"}/${item.videoid?.filepath?.replace(/\\/g, "/")?.replace(/^\/+/, "")}`
+                  }
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200 pointer-events-none"
                   preload="metadata"
                   muted

@@ -205,6 +205,7 @@ export const login = async (req, res) => {
     return res.status(200).json({
       otpRequired: true,
       tempToken,
+      token: tempToken,
       email: existingUser.email,
       device: {
         deviceName: deviceInfo.deviceName,
@@ -230,7 +231,8 @@ export const login = async (req, res) => {
    - Verifies OTP, registers the new device/location, completes login
 ================================================================== */
 export const verifyLoginOtp = async (req, res) => {
-  const { tempToken, otp } = req.body;
+  const tempToken = req.body.tempToken || req.body.token;
+  const otp = req.body.otp;
 
   try {
     if (!tempToken || !otp) {
@@ -348,7 +350,7 @@ export const verifyLoginOtp = async (req, res) => {
    - Resends OTP with rate-limiting cooldown
 ================================================================== */
 export const resendLoginOtp = async (req, res) => {
-  const { tempToken } = req.body;
+  const tempToken = req.body.tempToken || req.body.token;
 
   try {
     if (!tempToken) {

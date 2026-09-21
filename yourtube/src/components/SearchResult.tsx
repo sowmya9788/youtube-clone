@@ -48,7 +48,10 @@ export default function SearchResult({ query = "" }: SearchResultProps) {
     fetchSearchResults();
   }, [queryString]);
 
-  const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+  const backendUrl =
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL ||
+    "http://localhost:5000";
 
   if (!queryString || !queryString.trim()) {
     return (

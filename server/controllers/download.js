@@ -107,19 +107,24 @@ export const downloadVideo = async (req, res) => {
 
     if (!video.filepath) {
       return res.status(404).json({
-        message:
-          "The video file could not be found.",
+        message: "The video file could not be found.",
       });
     }
 
-    const filePath = path.resolve(
-      video.filepath
-    );
+    // If video is hosted on cloud storage (Cloudinary, S3, etc.)
+    if (video.filepath.startsWith("http://") || video.filepath.startsWith("https://")) {
+      await Download.create({
+        userId: userId,
+        videoId: video._id,
+      });
+      return res.redirect(video.filepath);
+    }
+
+    const filePath = path.resolve(video.filepath);
 
     if (!fs.existsSync(filePath)) {
       return res.status(404).json({
-        message:
-          "The video file could not be found on the server.",
+        message: "The video file could not be found on the server.",
       });
     }
 

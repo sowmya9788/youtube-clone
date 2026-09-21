@@ -22,20 +22,51 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
+// Allowed origins for CORS and Socket.io (localhost + production Vercel URL)
+const envFrontendUrls = process.env.FRONTEND_URL
+  ? process.env.FRONTEND_URL.split(",").map((url) => url.trim().replace(/\/$/, ""))
+  : [];
+
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:3001",
+  "http://127.0.0.1:3000",
+  "http://127.0.0.1:3001",
+  "https://youtube-4zjff1dk9-sowmya21.vercel.app",
+  ...envFrontendUrls,
+];
+
+const checkCorsOrigin = (origin, callback) => {
+  // Allow server-to-server, curl, mobile apps, or same-origin requests without an Origin header
+  if (!origin) return callback(null, true);
+
+  const cleanOrigin = origin.trim().replace(/\/$/, "");
+  if (allowedOrigins.includes(cleanOrigin)) {
+    return callback(null, true);
+  }
+
+  // Allow any Vercel preview or production deployment domain (*.vercel.app)
+  if (/^https:\/\/.*\.vercel\.app$/.test(cleanOrigin)) {
+    return callback(null, true);
+  }
+
+  return callback(null, false);
+};
+
 // Socket.io initialization for Real-time Watch Party
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000",
+    origin: checkCorsOrigin,
     methods: ["GET", "POST"],
     credentials: true,
   },
 });
 
 const corsOptions = {
-  origin: "http://localhost:3000",
+  origin: checkCorsOrigin,
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 };
 
 app.use(cors(corsOptions));
@@ -43,7 +74,6 @@ app.use(cors(corsOptions));
 app.use(
   express.json({
     limit: "30mb",
-    extended: true,
   })
 );
 
@@ -60,7 +90,14 @@ app.get("/", (req, res) => {
   res.send("YourTube backend & Watch Party server is working");
 });
 
-app.use(bodyParser.json());
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "healthy",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+  });
+});
 
 app.use("/user", userroutes);
 app.use("/video", videoroutes);
@@ -231,16 +268,21 @@ server.listen(PORT, () => {
   console.log(`Server & Socket.IO running on port ${PORT}`);
 });
 
-const DBURL = process.env.DB_URL;
+const DBURL = process.env.MONGO_URI || process.env.DB_URL;
 
-mongoose
-  .connect(DBURL)
-  .then(() => {
-    console.log("Mongodb connected");
-  })
-  .catch((error) => {
-    console.error("MongoDB connection failed:", error.message);
-    console.error(
-      "👉 Tip: If you're using MongoDB Atlas, make sure your current IP address is whitelisted in Network Access: https://cloud.mongodb.com"
-    );
-  });
+if (!DBURL) {
+  console.error("❌ MongoDB connection error: Neither MONGO_URI nor DB_URL is defined in environment variables.");
+  console.error("👉 Please define MONGO_URI in your .env or Render dashboard (e.g. MONGO_URI=mongodb+srv://...)");
+} else {
+  mongoose
+    .connect(DBURL)
+    .then(() => {
+      console.log("✅ MongoDB Atlas connected successfully");
+    })
+    .catch((error) => {
+      console.error("❌ MongoDB connection failed:", error.message);
+      console.error(
+        "👉 Tip: If you're using MongoDB Atlas, make sure your Network Access (IP Whitelist) allows your server IP (or 0.0.0.0/0 for cloud hosts like Render): https://cloud.mongodb.com"
+      );
+    });
+}

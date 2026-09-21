@@ -19,7 +19,10 @@ interface RelatedVideosProps {
 }
 
 export default function RelatedVideos({ videos }: RelatedVideosProps) {
-  const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+  const backendUrl =
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL ||
+    "http://localhost:5000";
 
   if (!videos || videos.length === 0) {
     return (

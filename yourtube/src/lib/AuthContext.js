@@ -82,15 +82,16 @@ export function UserProvider({ children }) {
 
       const data = res?.data;
 
-      // Server returns { result: user, otpRequired: bool } OR { otpRequired: true, token: ... }
-      if (data?.otpRequired && data?.token) {
+      // Server returns { result: user, otpRequired: bool } OR { otpRequired: true, tempToken / token: ... }
+      const activeOtpToken = data?.tempToken || data?.token;
+      if (data?.otpRequired && activeOtpToken) {
         // OTP flow — open the OTP modal
         setOtpState({
           isOpen: true,
           email: firebaseUser.email,
           device: data.device || null,
           location: data.location || null,
-          token: data.token,
+          token: activeOtpToken,
         });
         return null; // user not set until OTP verified
       }
@@ -392,6 +393,7 @@ export function UserProvider({ children }) {
       const res = await axiosInstance.post("/user/verify-otp", {
         otp,
         token: otpState.token,
+        tempToken: otpState.token,
       });
       const userData = res?.data?.result || res?.data?.user || res?.data;
       if (userData) {
@@ -407,6 +409,7 @@ export function UserProvider({ children }) {
   const resendOtp = useCallback(async () => {
     const res = await axiosInstance.post("/user/resend-otp", {
       token: otpState.token,
+      tempToken: otpState.token,
     });
     return res?.data;
   }, [otpState.token]);

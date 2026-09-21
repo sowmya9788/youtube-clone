@@ -97,7 +97,10 @@ export default function WatchPartyManager({
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
-  const backendUrl = process.env.BACKEND_URL || "http://localhost:5000";
+  const backendUrl =
+    process.env.NEXT_PUBLIC_BACKEND_URL ||
+    process.env.BACKEND_URL ||
+    "http://localhost:5000";
 
   // WebRTC ICE configuration
   const rtcConfig: RTCConfiguration = {
