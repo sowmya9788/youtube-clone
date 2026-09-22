@@ -2,7 +2,11 @@ import React, { useEffect, useState } from "react";
 import Videocard from "./videocard";
 import axiosInstance from "@/lib/axiosinstance";
 
-export default function Videogrid() {
+interface VideogridProps {
+  category?: string;
+}
+
+export default function Videogrid({ category = "All" }: VideogridProps) {
   const [videos, setVideos] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -11,7 +15,12 @@ export default function Videogrid() {
     setLoading(true);
     setError(null);
     try {
-      const res = await axiosInstance.get("/video/getall");
+      // Use the category filter endpoint when a specific category is selected
+      const endpoint =
+        !category || category === "All"
+          ? "/video/getall"
+          : `/video/getbycategory/${encodeURIComponent(category)}`;
+      const res = await axiosInstance.get(endpoint);
       setVideos(res.data || []);
     } catch (err: any) {
       console.warn("Error fetching videos:", err?.message);
@@ -26,7 +35,7 @@ export default function Videogrid() {
 
   useEffect(() => {
     fetchVideos();
-  }, []);
+  }, [category]);
 
   if (loading) {
     return (
@@ -85,7 +94,9 @@ export default function Videogrid() {
           No videos available yet
         </h3>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 max-w-sm">
-          Upload a video or check back soon to discover new content!
+          {category && category !== "All"
+            ? `No videos found in the "${category}" category.`
+            : "Upload a video or check back soon to discover new content!"}
         </p>
       </div>
     );

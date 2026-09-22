@@ -91,12 +91,39 @@ app.get("/", (req, res) => {
 });
 
 app.get("/api/health", (req, res) => {
+  const states = ["disconnected", "connected", "connecting", "disconnecting"];
+  const dbStatus = states[mongoose.connection.readyState] || "unknown";
   res.status(200).json({
     status: "healthy",
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
-    database: mongoose.connection.readyState === 1 ? "connected" : "disconnected",
+    database: {
+      status: dbStatus,
+      name: mongoose.connection.name || "none",
+      readyState: mongoose.connection.readyState,
+    },
   });
+});
+
+// Database readiness check middleware
+// Protects against "buffering timed out" errors by cleanly returning 503 while database is connecting
+app.use((req, res, next) => {
+  if (req.path === "/" || req.path === "/api/health") {
+    return next();
+  }
+
+  // readyState: 0 = disconnected, 1 = connected, 2 = connecting, 3 = disconnecting
+  if (mongoose.connection.readyState !== 1) {
+    const states = ["disconnected", "connected", "connecting", "disconnecting"];
+    const statusText = states[mongoose.connection.readyState] || "unknown";
+    console.warn(`[DB Guard] ${req.method} ${req.path} received while database is '${statusText}'`);
+    return res.status(503).json({
+      message: `Database is currently ${statusText}. Please wait a few seconds and try again.`,
+      readyState: mongoose.connection.readyState,
+    });
+  }
+
+  next();
 });
 
 app.use("/user", userroutes);
@@ -262,27 +289,64 @@ io.on("connection", (socket) => {
   socket.on("disconnect", handleLeave);
 });
 
-const PORT = process.env.PORT || 5000;
-
-server.listen(PORT, () => {
-  console.log(`Server & Socket.IO running on port ${PORT}`);
+// Monitor Mongoose connection lifecycle events for real-time observability
+mongoose.connection.on("connecting", () => {
+  console.log("[MongoDB] Connection state: Connecting to MongoDB Atlas...");
+});
+mongoose.connection.on("connected", () => {
+  console.log(`[MongoDB] Connected successfully to database: "${mongoose.connection.name}" at host: ${mongoose.connection.host}`);
+});
+mongoose.connection.on("error", (err) => {
+  console.error("[MongoDB] Connection error:", err.message);
+});
+mongoose.connection.on("disconnected", () => {
+  console.warn("[MongoDB] Connection disconnected. Mongoose will attempt automatic reconnection.");
+});
+mongoose.connection.on("reconnected", () => {
+  console.log("[MongoDB] Reconnected to MongoDB Atlas.");
 });
 
+const PORT = process.env.PORT || 5000;
 const DBURL = process.env.MONGO_URI || process.env.DB_URL;
+const DBNAME = process.env.DB_NAME || "youtube";
 
-if (!DBURL) {
-  console.error("❌ MongoDB connection error: Neither MONGO_URI nor DB_URL is defined in environment variables.");
-  console.error("👉 Please define MONGO_URI in your .env or Render dashboard (e.g. MONGO_URI=mongodb+srv://...)");
-} else {
-  mongoose
-    .connect(DBURL)
-    .then(() => {
-      console.log("✅ MongoDB Atlas connected successfully");
-    })
-    .catch((error) => {
-      console.error("❌ MongoDB connection failed:", error.message);
-      console.error(
-        "👉 Tip: If you're using MongoDB Atlas, make sure your Network Access (IP Whitelist) allows your server IP (or 0.0.0.0/0 for cloud hosts like Render): https://cloud.mongodb.com"
-      );
+async function startServer() {
+  if (!DBURL) {
+    console.error("❌ MongoDB connection error: Neither MONGO_URI nor DB_URL is defined in environment variables.");
+    console.error("👉 Please define MONGO_URI in your .env or Render dashboard (e.g. MONGO_URI=mongodb+srv://...)");
+    server.listen(PORT, () => {
+      console.log(`⚠️ Server running WITHOUT database on port ${PORT}`);
     });
+    return;
+  }
+
+  try {
+    console.log(`⏳ Connecting to MongoDB Atlas (target database: "${DBNAME}")...`);
+    await mongoose.connect(DBURL, {
+      dbName: DBNAME,
+      serverSelectionTimeoutMS: 20000,
+      socketTimeoutMS: 45000,
+      connectTimeoutMS: 30000,
+    });
+    console.log(`✅ MongoDB Atlas connected successfully to database: "${mongoose.connection.name}"`);
+  } catch (error) {
+    console.error("❌ MongoDB connection failed during startup:", error.message);
+    console.error(
+      "👉 Tip: If you're using MongoDB Atlas, make sure your Network Access (IP Whitelist) allows your server IP (or 0.0.0.0/0 for cloud hosts like Render): https://cloud.mongodb.com"
+    );
+  }
+
+  // Start HTTP and Socket.IO server only after the database connection attempt has completed
+  server.listen(PORT, () => {
+    console.log(`🚀 Server & Socket.IO running on port ${PORT}`);
+    console.log(
+      `📊 Initial DB state: ${
+        mongoose.connection.readyState === 1
+          ? `Connected ("${mongoose.connection.name}")`
+          : `Not connected (readyState ${mongoose.connection.readyState})`
+      }`
+    );
+  });
 }
+
+startServer();

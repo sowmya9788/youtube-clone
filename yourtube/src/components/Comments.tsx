@@ -115,6 +115,9 @@ const Comments = ({
   const [translatingComment, setTranslatingComment] =
     useState<string | null>(null);
 
+  const [replyingToId, setReplyingToId] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+
   /* =========================
      LOAD COMMENTS
   ========================= */
@@ -736,7 +739,7 @@ const Comments = ({
           ADD COMMENT
       ========================= */}
 
-      {user && (
+      {user ? (
         <div className="flex gap-4">
 
           <Avatar className="w-10 h-10">
@@ -758,7 +761,7 @@ const Comments = ({
             <div className="relative">
 
               <Textarea
-                placeholder="Write a comment in any language..."
+                placeholder="Add a comment..."
                 value={newComment}
                 onChange={(e) => {
                   setNewComment(
@@ -925,6 +928,13 @@ const Comments = ({
             </div>
 
           </div>
+        </div>
+      ) : (
+        <div className="flex gap-4 items-center p-3 rounded-lg border border-dashed border-gray-300 dark:border-[#383838] bg-gray-50/50 dark:bg-[#1f1f1f]/50 text-sm text-gray-600 dark:text-gray-400">
+          <Avatar className="w-10 h-10 opacity-60">
+            <AvatarFallback className="bg-gray-200 dark:bg-[#272727] text-gray-500">?</AvatarFallback>
+          </Avatar>
+          <span>Please sign in to comment.</span>
         </div>
       )}
 
@@ -1130,6 +1140,18 @@ const Comments = ({
                         </button>
 
                         <button
+                          onClick={() => {
+                            setReplyingToId(
+                              replyingToId === comment._id ? null : comment._id
+                            );
+                            setReplyText("");
+                          }}
+                          className="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 dark:bg-[#272727] text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-[#383838] transition-colors"
+                        >
+                          Reply
+                        </button>
+
+                        <button
                           onClick={() =>
                             setTranslationMenu(
                               translationOpen
@@ -1187,6 +1209,78 @@ const Comments = ({
                         )}
 
                       </div>
+
+                      {/* INLINE REPLY BOX */}
+
+                      {replyingToId === comment._id && (
+                        <div className="mt-3 flex gap-3 items-start pl-2 border-l-2 border-red-500">
+                          <Avatar className="w-8 h-8">
+                            <AvatarFallback>{user?.name?.[0] || "U"}</AvatarFallback>
+                          </Avatar>
+                          <div className="flex-1 space-y-2">
+                            <Textarea
+                              placeholder={`Reply to ${comment.usercommented}...`}
+                              value={replyText}
+                              onChange={(e) => setReplyText(e.target.value)}
+                              className="min-h-[60px] text-xs resize-none border-b-2 rounded-none focus-visible:ring-0 bg-transparent text-gray-900 dark:text-white placeholder:text-gray-500 dark:placeholder:text-gray-400 border-gray-300 dark:border-gray-700"
+                            />
+                            <div className="flex gap-2 justify-end">
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-[#272727]"
+                                onClick={() => {
+                                  setReplyingToId(null);
+                                  setReplyText("");
+                                }}
+                              >
+                                Cancel
+                              </Button>
+                              <Button
+                                size="sm"
+                                className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white font-medium"
+                                disabled={!replyText.trim() || isSubmitting}
+                                onClick={async () => {
+                                  if (!user) {
+                                    setCommentError("Please sign in to comment.");
+                                    return;
+                                  }
+                                  const trimmedReply = `@${comment.usercommented} ${replyText.trim()}`;
+                                  setIsSubmitting(true);
+                                  try {
+                                    const res = await axiosInstance.post(
+                                      "/comment/postcomment",
+                                      {
+                                        videoid: videoId,
+                                        videoId: videoId,
+                                        userid: user._id || user.uid,
+                                        userId: user._id || user.uid,
+                                        commentbody: trimmedReply,
+                                        comment: trimmedReply,
+                                        usercommented: user.name || user.displayName || "User",
+                                        userCommented: user.name || user.displayName || "User",
+                                      }
+                                    );
+                                    if (res.data?.data) {
+                                      setComments((prev) => [res.data.data, ...prev]);
+                                      setReplyingToId(null);
+                                      setReplyText("");
+                                      setCommentSuccess("Reply posted successfully.");
+                                      setTimeout(() => setCommentSuccess(""), 3000);
+                                    }
+                                  } catch (err: any) {
+                                    setCommentError("Unable to post reply.");
+                                  } finally {
+                                    setIsSubmitting(false);
+                                  }
+                                }}
+                              >
+                                Reply
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                       {/* TRANSLATION MENU */}
 

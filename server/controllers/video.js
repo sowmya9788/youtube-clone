@@ -87,3 +87,21 @@ export const getallvideo = async (req, res) => {
     return res.status(500).json({ message: error.message || "Something went wrong" });
   }
 };
+
+export const getbycategory = async (req, res) => {
+  const { category } = req.params;
+  try {
+    // "All" category (or missing) returns every video
+    if (!category || category.toLowerCase() === "all") {
+      const files = await video.find().sort({ createdAt: -1 });
+      return res.status(200).json(files);
+    }
+    const files = await video
+      .find({ category: { $regex: new RegExp(`^${category}$`, "i") } })
+      .sort({ createdAt: -1 });
+    return res.status(200).json(files);
+  } catch (error) {
+    console.error("getbycategory error:", error);
+    return res.status(500).json({ message: error.message || "Something went wrong" });
+  }
+};

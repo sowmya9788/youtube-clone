@@ -16,13 +16,23 @@ const categories = [
   "Travel",
   "Cooking",
   "Fashion",
+  "Entertainment",
   "Recently uploaded",
   "Watched",
   "New to you",
 ];
 
-export default function CategoryTabs() {
+interface CategoryTabsProps {
+  onCategoryChange?: (category: string) => void;
+}
+
+export default function CategoryTabs({ onCategoryChange }: CategoryTabsProps) {
   const [activeCategory, setActiveCategory] = useState("All");
+
+  const handleSelect = (category: string) => {
+    setActiveCategory(category);
+    onCategoryChange?.(category);
+  };
 
   return (
     <div className="w-full overflow-x-auto pb-3 mb-4" style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
@@ -30,7 +40,7 @@ export default function CategoryTabs() {
         {categories.map((category) => (
           <button
             key={category}
-            onClick={() => setActiveCategory(category)}
+            onClick={() => handleSelect(category)}
             className={`whitespace-nowrap rounded-lg text-sm font-medium px-3 py-1.5 transition-all duration-150 cursor-pointer ${
               activeCategory === category
                 ? "bg-gray-900 text-white dark:bg-white dark:text-black"
